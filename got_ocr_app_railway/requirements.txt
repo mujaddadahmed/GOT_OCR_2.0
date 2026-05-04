@@ -1,0 +1,19 @@
+# ── Web framework ──────────────────────────────────────────────────────────────
+fastapi==0.111.0
+uvicorn[standard]==0.29.0
+python-multipart==0.0.9
+
+# ── PyTorch CPU-only (keeps Railway build lean) ────────────────────────────────
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.2.1+cpu
+torchvision==0.17.1+cpu
+
+# ── GOT-OCR 2.0 exact-compatible deps ─────────────────────────────────────────
+transformers==4.37.2
+tiktoken==0.6.0
+accelerate>=0.26.0
+verovio
+einops
+
+# ── Utilities ──────────────────────────────────────────────────────────────────
+Pillow>=10.0.0
