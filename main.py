@@ -3,13 +3,14 @@ main.py — GOT-OCR 2.0 FastAPI service
 """
 
 import logging
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from ocr_engine import model_status, run_ocr
+from ocr_engine import model_status, run_ocr, start_background_load
 
 logging.basicConfig(
     level=logging.INFO,
@@ -18,17 +19,24 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 STATIC_DIR = Path(__file__).parent / "static"
+ALLOWED_TYPES = {"image/jpeg", "image/png", "image/webp", "image/bmp", "image/tiff"}
+MAX_FILE_BYTES = 20 * 1024 * 1024
 
-ALLOWED_TYPES = {
-    "image/jpeg", "image/png", "image/webp", "image/bmp", "image/tiff",
-}
-MAX_FILE_BYTES = 20 * 1024 * 1024  # 20 MB
 
-# No lifespan hook — model loads lazily on first /ocr request
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Start downloading/loading the model immediately in the background.
+    # The server becomes healthy right away; /ocr returns 503 until ready.
+    logger.info("Starting background model load …")
+    start_background_load()
+    yield
+
+
 app = FastAPI(
     title="GOT-OCR 2.0 API",
     description="Handwritten code recognition powered by GOT-OCR 2.0",
     version="1.0.0",
+    lifespan=lifespan,
 )
 
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
@@ -41,13 +49,13 @@ async def serve_ui():
 
 @app.get("/health")
 async def health():
-    """Liveness probe — always returns 200 as soon as the server is up."""
+    """Liveness probe — always 200 once the server is up."""
     return {"status": "ok"}
 
 
 @app.get("/status")
 async def status():
-    """Shows whether the model is loaded, loading, or errored."""
+    """Readiness probe — poll this to know when the model is ready."""
     return model_status()
 
 
@@ -56,6 +64,16 @@ async def ocr_endpoint(
     file: UploadFile = File(...),
     mode: str = Form("ocr"),
 ):
+    # Check model readiness first
+    s = model_status()
+    if s["loading"]:
+        raise HTTPException(
+            status_code=503,
+            detail="Model is still loading. Please wait a moment and try again.",
+        )
+    if s["error"]:
+        raise HTTPException(status_code=500, detail=f"Model load failed: {s['error']}")
+
     if (file.content_type or "") not in ALLOWED_TYPES:
         raise HTTPException(
             status_code=415,
@@ -74,7 +92,6 @@ async def ocr_endpoint(
     logger.info("OCR request — file=%s size=%d mode=%s", file.filename, len(image_bytes), mode)
 
     result = run_ocr(image_bytes, mode=mode, filename=file.filename or "upload.jpg")
-
     if result["error"]:
         raise HTTPException(status_code=500, detail=result["error"])
 

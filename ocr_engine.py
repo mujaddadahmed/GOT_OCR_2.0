@@ -1,9 +1,5 @@
 """
-ocr_engine.py
-─────────────
-Lazy singleton loader for GOT-OCR 2.0.
-The model is downloaded and loaded on the FIRST call to run_ocr(),
-not at startup — so the server becomes healthy immediately.
+ocr_engine.py — GOT-OCR 2.0 singleton with background loading
 """
 
 import logging
@@ -13,83 +9,67 @@ import time
 from pathlib import Path
 from typing import Literal
 
-import torch
-from transformers import AutoModel, AutoTokenizer
-
 logger = logging.getLogger(__name__)
 
 MODEL_ID = "stepfun-ai/GOT-OCR2_0"
 
 _tokenizer = None
 _model = None
-_loading = False
 _load_error: str | None = None
-_lock = threading.Lock()
+_ready = threading.Event()   # set once model is fully loaded
 
 
-def _get_device() -> str:
-    if torch.cuda.is_available():
-        return "cuda"
-    logger.warning("CUDA not available — running on CPU. Inference will be slow.")
-    return "cpu"
+def _load():
+    global _tokenizer, _model, _load_error
+    try:
+        import torch
+        from transformers import AutoModel, AutoTokenizer
+
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        if device == "cpu":
+            logger.warning("CUDA not available — running on CPU. Inference will be slow.")
+
+        logger.info("Loading GOT-OCR 2.0 tokenizer …")
+        _tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, trust_remote_code=True)
+
+        logger.info("Loading GOT-OCR 2.0 model (may download ~2 GB on first run) …")
+        kwargs = dict(
+            trust_remote_code=True,
+            low_cpu_mem_usage=True,
+            use_safetensors=True,
+            pad_token_id=_tokenizer.eos_token_id,
+        )
+        if device == "cuda":
+            kwargs["device_map"] = "cuda"
+            _model = AutoModel.from_pretrained(MODEL_ID, **kwargs).eval().cuda()
+        else:
+            _model = AutoModel.from_pretrained(MODEL_ID, **kwargs).eval()
+
+        logger.info("GOT-OCR 2.0 ready on %s", device)
+
+    except Exception as exc:
+        _load_error = str(exc)
+        logger.exception("Model load failed: %s", exc)
+    finally:
+        _ready.set()   # always unblock waiters, even on failure
 
 
-def _load_model_internal() -> None:
-    global _tokenizer, _model, _loading, _load_error
-
-    device = _get_device()
-    logger.info("Loading GOT-OCR 2.0 tokenizer …")
-    tok = AutoTokenizer.from_pretrained(MODEL_ID, trust_remote_code=True)
-
-    logger.info("Loading GOT-OCR 2.0 model (may download ~2 GB on first run) …")
-    load_kwargs = dict(
-        trust_remote_code=True,
-        low_cpu_mem_usage=True,
-        use_safetensors=True,
-        pad_token_id=tok.eos_token_id,
-    )
-    if device == "cuda":
-        load_kwargs["device_map"] = "cuda"
-        mdl = AutoModel.from_pretrained(MODEL_ID, **load_kwargs).eval().cuda()
-    else:
-        mdl = AutoModel.from_pretrained(MODEL_ID, **load_kwargs).eval()
-
-    _tokenizer = tok
-    _model = mdl
-    logger.info("GOT-OCR 2.0 ready on %s", device)
+def start_background_load():
+    """Kick off model loading in a daemon thread. Call once at app startup."""
+    t = threading.Thread(target=_load, name="model-loader", daemon=True)
+    t.start()
 
 
-def ensure_loaded() -> None:
-    """Load the model if not already loaded. Thread-safe. Raises on failure."""
-    global _loading, _load_error
-
-    if _model is not None:
-        return
-    if _load_error:
-        raise RuntimeError(f"Model failed to load previously: {_load_error}")
-
-    with _lock:
-        # Double-checked locking
-        if _model is not None:
-            return
-        if _load_error:
-            raise RuntimeError(f"Model failed to load previously: {_load_error}")
-
-        _loading = True
-        try:
-            _load_model_internal()
-        except Exception as exc:
-            _load_error = str(exc)
-            logger.exception("Model load failed: %s", exc)
-            raise
-        finally:
-            _loading = False
+def wait_until_ready(timeout: float = 5.0) -> bool:
+    """Block up to `timeout` seconds. Returns True if model is loaded."""
+    return _ready.wait(timeout=timeout)
 
 
 def model_status() -> dict:
+    ready = _ready.is_set()
     return {
-        "loaded": _model is not None,
-        "loading": _loading,
+        "loaded": ready and _load_error is None,
+        "loading": not ready,
         "error": _load_error,
     }
 
@@ -99,7 +79,10 @@ def run_ocr(
     mode: Literal["ocr", "format"] = "ocr",
     filename: str = "upload.jpg",
 ) -> dict:
-    ensure_loaded()
+    if not _ready.is_set():
+        raise RuntimeError("Model is still loading.")
+    if _load_error:
+        raise RuntimeError(f"Model failed to load: {_load_error}")
 
     suffix = Path(filename).suffix or ".jpg"
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
@@ -109,11 +92,10 @@ def run_ocr(
     start = time.perf_counter()
     try:
         result = _model.chat(_tokenizer, tmp_path, ocr_type=mode)
-        elapsed = time.perf_counter() - start
         return {
             "text": result.strip() if result else "",
             "mode": mode,
-            "time_seconds": round(elapsed, 3),
+            "time_seconds": round(time.perf_counter() - start, 3),
             "error": None,
         }
     except Exception as exc:
