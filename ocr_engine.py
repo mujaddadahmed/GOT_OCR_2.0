@@ -1,13 +1,14 @@
 """
 ocr_engine.py
 ─────────────
-Singleton loader for GOT-OCR 2.0.
-Import `run_ocr` from here — it is safe to call from multiple requests
-because the model is loaded once at startup and reused.
+Lazy singleton loader for GOT-OCR 2.0.
+The model is downloaded and loaded on the FIRST call to run_ocr(),
+not at startup — so the server becomes healthy immediately.
 """
 
 import logging
 import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import Literal
@@ -19,48 +20,78 @@ logger = logging.getLogger(__name__)
 
 MODEL_ID = "stepfun-ai/GOT-OCR2_0"
 
-# ── Module-level singletons ────────────────────────────────────────────────────
 _tokenizer = None
 _model = None
+_loading = False
+_load_error: str | None = None
+_lock = threading.Lock()
 
 
 def _get_device() -> str:
     if torch.cuda.is_available():
         return "cuda"
-    # GOT-OCR was trained for GPU; CPU works but is very slow
-    logger.warning("CUDA not available — running on CPU. Expect slow inference.")
+    logger.warning("CUDA not available — running on CPU. Inference will be slow.")
     return "cpu"
 
 
-def load_model() -> None:
-    """Load tokenizer + model into module-level singletons.
-
-    Call once at application startup (FastAPI lifespan).
-    Thread-safe for read-only inference after loading.
-    """
-    global _tokenizer, _model
-
-    if _model is not None:
-        return  # already loaded
+def _load_model_internal() -> None:
+    global _tokenizer, _model, _loading, _load_error
 
     device = _get_device()
-    logger.info("Loading GOT-OCR 2.0 tokenizer from %s …", MODEL_ID)
-    _tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, trust_remote_code=True)
+    logger.info("Loading GOT-OCR 2.0 tokenizer …")
+    tok = AutoTokenizer.from_pretrained(MODEL_ID, trust_remote_code=True)
 
-    logger.info("Loading GOT-OCR 2.0 model (first run downloads ~2 GB) …")
+    logger.info("Loading GOT-OCR 2.0 model (may download ~2 GB on first run) …")
     load_kwargs = dict(
         trust_remote_code=True,
         low_cpu_mem_usage=True,
         use_safetensors=True,
-        pad_token_id=_tokenizer.eos_token_id,
+        pad_token_id=tok.eos_token_id,
     )
     if device == "cuda":
         load_kwargs["device_map"] = "cuda"
-        _model = AutoModel.from_pretrained(MODEL_ID, **load_kwargs).eval().cuda()
+        mdl = AutoModel.from_pretrained(MODEL_ID, **load_kwargs).eval().cuda()
     else:
-        _model = AutoModel.from_pretrained(MODEL_ID, **load_kwargs).eval()
+        mdl = AutoModel.from_pretrained(MODEL_ID, **load_kwargs).eval()
 
+    _tokenizer = tok
+    _model = mdl
     logger.info("GOT-OCR 2.0 ready on %s", device)
+
+
+def ensure_loaded() -> None:
+    """Load the model if not already loaded. Thread-safe. Raises on failure."""
+    global _loading, _load_error
+
+    if _model is not None:
+        return
+    if _load_error:
+        raise RuntimeError(f"Model failed to load previously: {_load_error}")
+
+    with _lock:
+        # Double-checked locking
+        if _model is not None:
+            return
+        if _load_error:
+            raise RuntimeError(f"Model failed to load previously: {_load_error}")
+
+        _loading = True
+        try:
+            _load_model_internal()
+        except Exception as exc:
+            _load_error = str(exc)
+            logger.exception("Model load failed: %s", exc)
+            raise
+        finally:
+            _loading = False
+
+
+def model_status() -> dict:
+    return {
+        "loaded": _model is not None,
+        "loading": _loading,
+        "error": _load_error,
+    }
 
 
 def run_ocr(
@@ -68,30 +99,9 @@ def run_ocr(
     mode: Literal["ocr", "format"] = "ocr",
     filename: str = "upload.jpg",
 ) -> dict:
-    """
-    Run GOT-OCR 2.0 on raw image bytes.
-
-    Parameters
-    ----------
-    image_bytes : raw bytes of the uploaded image file
-    mode        : 'ocr'    → plain text output
-                  'format' → structured / formatted output (LaTeX-style)
-    filename    : original filename (used only to choose a tmp suffix)
-
-    Returns
-    -------
-    dict with keys:
-        text          str   — recognised text
-        mode          str   — mode used
-        time_seconds  float — wall-clock inference time
-        error         str | None
-    """
-    if _model is None or _tokenizer is None:
-        raise RuntimeError("Model not loaded. Call load_model() at startup.")
+    ensure_loaded()
 
     suffix = Path(filename).suffix or ".jpg"
-
-    # Write bytes to a real temp file because model.chat() needs a file path
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
         tmp.write(image_bytes)
         tmp_path = tmp.name
