@@ -1,0 +1,17 @@
+# ── Web framework ─────────────────────────────────────────────────────────────
+fastapi==0.111.0
+uvicorn[standard]==0.29.0
+python-multipart==0.0.9
+
+# ── GOT-OCR 2.0 exact-compatible deps ─────────────────────────────────────────
+transformers==4.37.2
+tiktoken==0.6.0
+accelerate>=0.26.0
+verovio
+einops
+
+# ── Utilities ─────────────────────────────────────────────────────────────────
+Pillow>=10.0.0
+
+# NOTE: torch + torchvision are installed separately in nixpacks.toml
+# using the CPU-only wheel to keep Railway build size manageable.

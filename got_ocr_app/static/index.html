@@ -1,0 +1,440 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>GOT-OCR 2.0 — Handwritten Code Recognition</title>
+  <style>
+    /* ── Reset & tokens ───────────────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:        #0f1117;
+      --surface:   #1a1d27;
+      --surface2:  #22263a;
+      --border:    #2e3350;
+      --accent:    #6c8fff;
+      --accent-glow: rgba(108,143,255,.18);
+      --success:   #4ade80;
+      --warn:      #facc15;
+      --error:     #f87171;
+      --text:      #e8eaf6;
+      --muted:     #8890b0;
+      --font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+      --radius:    12px;
+      --transition: .2s cubic-bezier(.4,0,.2,1);
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 2rem 1rem 4rem;
+    }
+
+    /* ── Header ───────────────────────────────────────────────────────────── */
+    header {
+      text-align: center;
+      margin-bottom: 2.5rem;
+    }
+    .logo {
+      display: inline-flex;
+      align-items: center;
+      gap: .6rem;
+      margin-bottom: .75rem;
+    }
+    .logo svg { width: 38px; height: 38px; }
+    h1 {
+      font-size: 1.9rem;
+      font-weight: 700;
+      letter-spacing: -.02em;
+      background: linear-gradient(135deg, #a5b4fc 0%, #6c8fff 50%, #38bdf8 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+    .subtitle {
+      color: var(--muted);
+      font-size: .95rem;
+      margin-top: .3rem;
+    }
+
+    /* ── Card ─────────────────────────────────────────────────────────────── */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 2rem;
+      width: 100%;
+      max-width: 720px;
+    }
+
+    /* ── Drop zone ────────────────────────────────────────────────────────── */
+    .dropzone {
+      border: 2px dashed var(--border);
+      border-radius: 10px;
+      padding: 2.5rem 1.5rem;
+      text-align: center;
+      cursor: pointer;
+      transition: border-color var(--transition), background var(--transition);
+      position: relative;
+    }
+    .dropzone.dragover,
+    .dropzone:hover {
+      border-color: var(--accent);
+      background: var(--accent-glow);
+    }
+    .dropzone input[type="file"] {
+      position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%; height: 100%;
+    }
+    .drop-icon { font-size: 2.5rem; margin-bottom: .5rem; line-height: 1; }
+    .drop-label { font-size: 1rem; color: var(--muted); }
+    .drop-label strong { color: var(--accent); }
+    .drop-hint { font-size: .8rem; color: var(--muted); margin-top: .4rem; }
+
+    /* ── Preview ──────────────────────────────────────────────────────────── */
+    #preview-wrap {
+      display: none;
+      margin-top: 1.5rem;
+      text-align: center;
+    }
+    #preview-wrap img {
+      max-height: 280px;
+      max-width: 100%;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      object-fit: contain;
+    }
+    #preview-name {
+      font-size: .8rem;
+      color: var(--muted);
+      margin-top: .4rem;
+    }
+
+    /* ── Controls ─────────────────────────────────────────────────────────── */
+    .controls {
+      display: flex;
+      gap: 1rem;
+      margin-top: 1.5rem;
+      align-items: flex-end;
+      flex-wrap: wrap;
+    }
+    .field {
+      display: flex;
+      flex-direction: column;
+      gap: .4rem;
+      flex: 1;
+      min-width: 160px;
+    }
+    label { font-size: .8rem; color: var(--muted); font-weight: 500; letter-spacing: .03em; text-transform: uppercase; }
+    select {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text);
+      font-size: .95rem;
+      padding: .6rem .9rem;
+      cursor: pointer;
+      outline: none;
+      transition: border-color var(--transition);
+      appearance: none;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%238890b0' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right .75rem center;
+      padding-right: 2.2rem;
+    }
+    select:focus { border-color: var(--accent); }
+
+    button#run-btn {
+      background: linear-gradient(135deg, #6c8fff, #38bdf8);
+      border: none;
+      border-radius: 8px;
+      color: #fff;
+      font-size: .95rem;
+      font-weight: 600;
+      padding: .65rem 1.6rem;
+      cursor: pointer;
+      transition: opacity var(--transition), transform var(--transition);
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+    button#run-btn:hover:not(:disabled) { opacity: .88; transform: translateY(-1px); }
+    button#run-btn:disabled { opacity: .45; cursor: not-allowed; transform: none; }
+
+    /* ── Status bar ───────────────────────────────────────────────────────── */
+    #status {
+      display: none;
+      margin-top: 1.25rem;
+      font-size: .88rem;
+      padding: .6rem .9rem;
+      border-radius: 8px;
+      align-items: center;
+      gap: .5rem;
+    }
+    #status.loading { display: flex; background: var(--surface2); color: var(--muted); border: 1px solid var(--border); }
+    #status.success { display: flex; background: rgba(74,222,128,.1); color: var(--success); border: 1px solid rgba(74,222,128,.3); }
+    #status.error   { display: flex; background: rgba(248,113,113,.1); color: var(--error);   border: 1px solid rgba(248,113,113,.3); }
+
+    .spinner {
+      width: 16px; height: 16px; border-radius: 50%;
+      border: 2px solid transparent;
+      border-top-color: var(--accent);
+      animation: spin .7s linear infinite;
+      flex-shrink: 0;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── Result ───────────────────────────────────────────────────────────── */
+    #result-wrap {
+      display: none;
+      margin-top: 1.5rem;
+    }
+    .result-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: .6rem;
+    }
+    .result-title {
+      font-size: .8rem;
+      color: var(--muted);
+      font-weight: 500;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+    }
+    .result-meta {
+      font-size: .78rem;
+      color: var(--muted);
+    }
+    .copy-btn {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--muted);
+      font-size: .78rem;
+      padding: .3rem .75rem;
+      cursor: pointer;
+      transition: color var(--transition), border-color var(--transition);
+    }
+    .copy-btn:hover { color: var(--text); border-color: var(--accent); }
+    .copy-btn.copied { color: var(--success); border-color: var(--success); }
+
+    #output-code {
+      background: #0d1117;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 1.25rem;
+      font-family: var(--font-mono);
+      font-size: .88rem;
+      line-height: 1.7;
+      white-space: pre-wrap;
+      word-break: break-word;
+      color: #c9d1d9;
+      max-height: 420px;
+      overflow-y: auto;
+    }
+    /* Scrollbar styling */
+    #output-code::-webkit-scrollbar { width: 6px; }
+    #output-code::-webkit-scrollbar-track { background: transparent; }
+    #output-code::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+    /* ── Footer ───────────────────────────────────────────────────────────── */
+    footer {
+      margin-top: 3rem;
+      font-size: .78rem;
+      color: var(--muted);
+      text-align: center;
+    }
+    footer a { color: var(--accent); text-decoration: none; }
+    footer a:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+
+<!-- Header -->
+<header>
+  <div class="logo">
+    <svg viewBox="0 0 38 38" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <rect width="38" height="38" rx="10" fill="url(#g)"/>
+      <path d="M10 19h5l3-7 4 14 3-9 3 5h0" stroke="#fff" stroke-width="2.2"
+            stroke-linecap="round" stroke-linejoin="round"/>
+      <defs>
+        <linearGradient id="g" x1="0" y1="0" x2="38" y2="38" gradientUnits="userSpaceOnUse">
+          <stop stop-color="#6c8fff"/>
+          <stop offset="1" stop-color="#38bdf8"/>
+        </linearGradient>
+      </defs>
+    </svg>
+    <h1>GOT-OCR 2.0</h1>
+  </div>
+  <p class="subtitle">Upload an image of handwritten code → get the extracted text instantly</p>
+</header>
+
+<!-- Main card -->
+<div class="card">
+
+  <!-- Drop zone -->
+  <div class="dropzone" id="dropzone">
+    <input type="file" id="file-input" accept="image/*" />
+    <div class="drop-icon">🖼️</div>
+    <p class="drop-label"><strong>Click to browse</strong> or drag & drop an image</p>
+    <p class="drop-hint">JPEG · PNG · WEBP · BMP · TIFF &nbsp;|&nbsp; Max 20 MB</p>
+  </div>
+
+  <!-- Preview -->
+  <div id="preview-wrap">
+    <img id="preview-img" src="" alt="Preview" />
+    <p id="preview-name"></p>
+  </div>
+
+  <!-- Controls -->
+  <div class="controls">
+    <div class="field">
+      <label for="mode-select">Output mode</label>
+      <select id="mode-select">
+        <option value="ocr" selected>Plain text (ocr)</option>
+        <option value="format">Formatted / structured (format)</option>
+      </select>
+    </div>
+    <button id="run-btn" disabled>Run OCR</button>
+  </div>
+
+  <!-- Status -->
+  <div id="status"></div>
+
+  <!-- Result -->
+  <div id="result-wrap">
+    <div class="result-header">
+      <span class="result-title">Recognised text</span>
+      <div style="display:flex;gap:.6rem;align-items:center">
+        <span class="result-meta" id="result-meta"></span>
+        <button class="copy-btn" id="copy-btn">Copy</button>
+      </div>
+    </div>
+    <pre id="output-code"></pre>
+  </div>
+
+</div>
+
+<footer>
+  Powered by <a href="https://huggingface.co/stepfun-ai/GOT-OCR2_0" target="_blank">GOT-OCR 2.0</a>
+  &nbsp;·&nbsp;
+  API docs at <a href="/docs" target="_blank">/docs</a>
+</footer>
+
+<script>
+  const dropzone    = document.getElementById('dropzone');
+  const fileInput   = document.getElementById('file-input');
+  const previewWrap = document.getElementById('preview-wrap');
+  const previewImg  = document.getElementById('preview-img');
+  const previewName = document.getElementById('preview-name');
+  const runBtn      = document.getElementById('run-btn');
+  const modeSelect  = document.getElementById('mode-select');
+  const statusEl    = document.getElementById('status');
+  const resultWrap  = document.getElementById('result-wrap');
+  const outputCode  = document.getElementById('output-code');
+  const resultMeta  = document.getElementById('result-meta');
+  const copyBtn     = document.getElementById('copy-btn');
+
+  let selectedFile = null;
+
+  /* ── Drag & drop ────────────────────────────────────────────────────────── */
+  dropzone.addEventListener('dragover', e => { e.preventDefault(); dropzone.classList.add('dragover'); });
+  dropzone.addEventListener('dragleave', ()  => dropzone.classList.remove('dragover'));
+  dropzone.addEventListener('drop', e => {
+    e.preventDefault();
+    dropzone.classList.remove('dragover');
+    const file = e.dataTransfer.files[0];
+    if (file) handleFile(file);
+  });
+
+  fileInput.addEventListener('change', () => {
+    if (fileInput.files[0]) handleFile(fileInput.files[0]);
+  });
+
+  function handleFile(file) {
+    if (!file.type.startsWith('image/')) {
+      showStatus('error', '⚠️ Please upload an image file.');
+      return;
+    }
+    selectedFile = file;
+
+    // Preview
+    const reader = new FileReader();
+    reader.onload = e => { previewImg.src = e.target.result; };
+    reader.readAsDataURL(file);
+    previewWrap.style.display = 'block';
+    previewName.textContent   = `${file.name}  (${(file.size / 1024).toFixed(1)} KB)`;
+
+    hideStatus();
+    resultWrap.style.display = 'none';
+    runBtn.disabled = false;
+  }
+
+  /* ── Submit ─────────────────────────────────────────────────────────────── */
+  runBtn.addEventListener('click', async () => {
+    if (!selectedFile) return;
+
+    runBtn.disabled = true;
+    showStatus('loading', 'Running OCR … this may take a few seconds');
+    resultWrap.style.display = 'none';
+
+    const fd = new FormData();
+    fd.append('file', selectedFile);
+    fd.append('mode', modeSelect.value);
+
+    try {
+      const resp = await fetch('/ocr', { method: 'POST', body: fd });
+      const data = await resp.json();
+
+      if (!resp.ok) {
+        showStatus('error', `❌ ${data.detail || 'Server error'}`);
+        runBtn.disabled = false;
+        return;
+      }
+
+      showStatus('success', `✅ Done in ${data.time_seconds}s`);
+      outputCode.textContent   = data.text || '(no text recognised)';
+      resultMeta.textContent   = `mode: ${data.mode} · ${data.time_seconds}s`;
+      resultWrap.style.display = 'block';
+    } catch (err) {
+      showStatus('error', `❌ Network error: ${err.message}`);
+    }
+
+    runBtn.disabled = false;
+  });
+
+  /* ── Copy ───────────────────────────────────────────────────────────────── */
+  copyBtn.addEventListener('click', () => {
+    navigator.clipboard.writeText(outputCode.textContent).then(() => {
+      copyBtn.textContent = 'Copied!';
+      copyBtn.classList.add('copied');
+      setTimeout(() => {
+        copyBtn.textContent = 'Copy';
+        copyBtn.classList.remove('copied');
+      }, 1800);
+    });
+  });
+
+  /* ── Helpers ─────────────────────────────────────────────────────────────── */
+  function showStatus(type, msg) {
+    statusEl.className = type;
+    if (type === 'loading') {
+      statusEl.innerHTML = `<div class="spinner"></div><span>${msg}</span>`;
+    } else {
+      statusEl.innerHTML = `<span>${msg}</span>`;
+    }
+  }
+  function hideStatus() {
+    statusEl.className = '';
+    statusEl.innerHTML = '';
+    statusEl.style.display = 'none';
+    // re-trigger display via class
+  }
+</script>
+</body>
+</html>
